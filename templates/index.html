@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Knowledge Agent Dashboard</title>
+    <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body class="bg-gray-100">
+    <div class="container mx-auto px-4 py-8">
+        <h1 class="text-3xl font-bold mb-8">Knowledge Agent Dashboard</h1>
+        
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">Recent Knowledge Entries</h2>
+                <div id="knowledge-list" class="space-y-4">
+                    <!-- Knowledge entries will be loaded here -->
+                </div>
+            </div>
+            
+            <div class="bg-white rounded-lg shadow p-6">
+                <h2 class="text-xl font-semibold mb-4">Relevance Distribution</h2>
+                <canvas id="relevanceChart"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadKnowledge() {
+            const response = await fetch('/api/knowledge');
+            const entries = await response.json();
+            
+            const knowledgeList = document.getElementById('knowledge-list');
+            knowledgeList.innerHTML = entries.map(entry => `
+                <div class="border-b pb-4">
+                    <h3 class="font-semibold">${entry.topic}</h3>
+                    <p class="text-gray-600 text-sm">${entry.content}</p>
+                    <div class="flex justify-between items-center mt-2">
+                        <a href="${entry.source_url}" target="_blank" class="text-blue-500 text-sm">Source</a>
+                        <span class="text-sm">Score: ${entry.relevance_score}/10</span>
+                    </div>
+                </div>
+            `).join('');
+
+            // Create relevance distribution chart
+            const scores = entries.map(entry => entry.relevance_score);
+            const scoreCounts = {};
+            scores.forEach(score => {
+                scoreCounts[score] = (scoreCounts[score] || 0) + 1;
+            });
+
+            new Chart(document.getElementById('relevanceChart'), {
+                type: 'bar',
+                data: {
+                    labels: Object.keys(scoreCounts),
+                    datasets: [{
+                        label: 'Number of Entries',
+                        data: Object.values(scoreCounts),
+                        backgroundColor: 'rgba(59, 130, 246, 0.5)',
+                        borderColor: 'rgb(59, 130, 246)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            ticks: {
+                                stepSize: 1
+                            }
+                        }
+                    }
+                }
+            });
+        }
+
+        // Load data initially and refresh every 5 minutes
+        loadKnowledge();
+        setInterval(loadKnowledge, 300000);
+    </script>
+</body>
+</html> 
