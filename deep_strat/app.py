@@ -1,9 +1,13 @@
 from flask import Flask, render_template, jsonify
-from knowledge_agent import KnowledgeEntry, Session
+from deep_strat.knowledge_agent import KnowledgeEntry, Session
 from sqlalchemy import desc
 import json
+from deep_strat.search_api import search_bp
+from deep_strat.rag_api import rag_bp
 
 app = Flask(__name__)
+app.register_blueprint(search_bp)
+app.register_blueprint(rag_bp)
 
 @app.route('/')
 def index():
@@ -26,4 +30,4 @@ def get_knowledge():
         session.close()
 
 if __name__ == '__main__':
-    app.run(debug=True) 
+    app.run(debug=True, port=5001) 

@@ -1,62 +1,117 @@
-# Deep Strat
+# Deep Strat - Knowledge Agent with RAG
 
-A knowledge-based agent system.
+A knowledge management system with RAG-based question answering capabilities.
 
-## Installation
+## Features
 
+- Knowledge base management
+- RAG-based question answering
+- Vector search using ChromaDB
+- OpenAI integration for embeddings and LLM
+
+## Setup
+
+### Prerequisites
+
+- Python 3.8+
+- OpenAI API key
+
+### Installation
+
+1. Clone the repository:
 ```bash
-# Clone the repository
 git clone https://github.com/yourusername/deep-strat.git
 cd deep-strat
-
-# Create and activate a virtual environment
-python -m venv .venv
-source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-
-# Install the package in development mode with all dependencies
-pip install -e ".[dev]"
-
-# Install pre-commit hooks
-pre-commit install
 ```
 
-## Development
+2. Create and activate a virtual environment (recommended):
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
 
-This project uses several tools to maintain code quality:
+3. Install dependencies:
+```bash
+pip install -r requirements.txt
+```
 
-- [Black](https://github.com/psf/black) for code formatting
-- [isort](https://github.com/PyCQA/isort) for import sorting
-- [flake8](https://github.com/PyCQA/flake8) for linting
-- [mypy](http://mypy-lang.org/) for static type checking
-- [pytest](https://docs.pytest.org/) for testing
+If you encounter any issues with the dependencies, you can try installing them one by one:
+```bash
+pip install flask==2.0.1
+pip install sqlalchemy==1.4.23
+pip install python-dotenv==0.19.0
+pip install langchain==0.0.267
+pip install chromadb
+pip install openai==0.27.0
+```
 
-All these tools are automatically run on each commit thanks to pre-commit hooks.
+4. Create a `.env` file with your OpenAI API key:
+```
+OPENAI_API_KEY=your_openai_api_key
+CHROMA_PERSIST_DIRECTORY=./chroma_db
+```
 
-## Running Tests
+### Setting up ChromaDB
+
+ChromaDB is used for vector storage. It's a local database that doesn't require a separate server:
+
+1. Check if ChromaDB is ready:
+```bash
+python check_chroma.py
+```
+
+2. The script will create the necessary directory if it doesn't exist.
+
+## Usage
+
+### Starting the Application
 
 ```bash
-pytest
+python -m deep_strat.app
 ```
 
-## Project Structure
+The application will be available at http://localhost:5001
 
+### Using the RAG System
+
+1. Initialize the RAG system by clicking the "Initialize RAG System" button on the dashboard.
+2. Ask questions in the question input field.
+3. View answers and relevant documents.
+
+## Troubleshooting
+
+### ChromaDB Issues
+
+If you encounter issues with ChromaDB:
+
+1. Make sure the ChromaDB directory exists and is writable.
+2. Run the ChromaDB checker script:
+```bash
+python check_chroma.py
 ```
-deep-strat/
-├── deep_strat/           # Main package directory
-│   ├── __init__.py
-│   ├── app.py           # Flask application
-│   ├── knowledge_agent.py
-│   ├── test_agent.py
-│   └── templates/       # Flask templates
-├── tests/               # Test directory
-├── .github/
-│   └── workflows/      # GitHub Actions workflows
-├── .pre-commit-config.yaml
-├── pyproject.toml      # Project configuration and dependencies
-├── README.md
-└── LICENSE
+3. Follow the instructions provided by the script.
+
+### OpenAI API Issues
+
+If you encounter issues with the OpenAI API:
+
+1. Make sure your OpenAI API key is correctly set in the `.env` file.
+2. Check if you have sufficient credits in your OpenAI account.
+3. Verify that your API key has access to the required models (gpt-4 and text-embedding-ada-002).
+
+### Dependency Issues
+
+If you encounter issues with dependencies:
+
+1. Make sure you have the latest version of pip:
+```bash
+pip install --upgrade pip
 ```
+
+2. Try installing the dependencies one by one as shown in the installation section.
+
+3. If you're still having issues, try using a different Python version or creating a new virtual environment.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT

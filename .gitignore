@@ -255,3 +255,5 @@ dist/
 # Angular project files
 /dist/
 /node_modules/
+
+chroma_db
