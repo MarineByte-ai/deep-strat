@@ -1,11 +1,16 @@
 from flask import Flask, render_template, jsonify
 from deep_strat.knowledge_agent import KnowledgeEntry, Session
+from deep_strat.knowledge_agent import KnowledgeEntry, Session
 from sqlalchemy import desc
 import json
 from deep_strat.search_api import search_bp
 from deep_strat.rag_api import rag_bp
+from flask_cors import CORS
 
 app = Flask(__name__)
+# Enable CORS for all routes
+CORS(app, resources={r"/api/*": {"origins": "*"}})
+
 app.register_blueprint(search_bp)
 app.register_blueprint(rag_bp)
 
@@ -30,4 +35,4 @@ def get_knowledge():
         session.close()
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5001) 
+    app.run(debug=True, port=5000) 

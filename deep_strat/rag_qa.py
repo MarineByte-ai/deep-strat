@@ -1,5 +1,5 @@
 import os
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Iterator
 import logging
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -9,6 +9,9 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.prompts import PromptTemplate
 from deep_strat.knowledge_agent import KnowledgeEntry, Session
 from pydantic import SecretStr
+from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
+from langchain_core.runnables import RunnableConfig
+from langchain_core.callbacks.base import BaseCallbackHandler
 
 # Configure logging
 logging.basicConfig(
@@ -33,6 +36,22 @@ SECRET_API_KEY = SecretStr(OPENAI_API_KEY)
 CHROMA_PERSIST_DIRECTORY = os.getenv('CHROMA_PERSIST_DIRECTORY', './chroma_db')
 COLLECTION_NAME = "knowledge_base"
 
+
+class StreamingResponseCallback(BaseCallbackHandler):
+    """Callback handler for streaming responses."""
+    
+    def __init__(self):
+        self.text = ""
+        
+    def on_llm_new_token(self, token: str, **kwargs) -> None:
+        """Called when the LLM produces a new token."""
+        self.text += token
+        
+    def get_current_response(self) -> str:
+        """Get the current response text."""
+        return self.text
+
+
 class RAGQuestionAnswerer:
     def __init__(self):
         """Initialize the RAG question answering system"""
@@ -44,6 +63,7 @@ class RAGQuestionAnswerer:
         self.qa_chain = None  # type: ignore
         self.initialized = False
         self.llm = None  # type: ignore
+        self.streaming_llm = None  # type: ignore
         
     def initialize(self):
         """Initialize the vector store and QA chain"""
@@ -76,6 +96,14 @@ class RAGQuestionAnswerer:
                 model="gpt-4o-mini",
                 temperature=0,
                 api_key=SECRET_API_KEY
+            )
+            
+            # Create a streaming version of the language model
+            self.streaming_llm = ChatOpenAI(  # type: ignore
+                model="gpt-4o-mini",
+                temperature=0,
+                api_key=SECRET_API_KEY,
+                streaming=True
             )
             
             prompt_template = """
@@ -180,6 +208,79 @@ class RAGQuestionAnswerer:
                 "question": question,
                 "answer": f"Error: {str(e)}",
                 "sources": []
+            }
+            
+    def streaming_answer_question(self, question: str) -> Iterator[Dict[str, Any]]:
+        """
+        Answer a question using the RAG system with streaming output.
+        
+        Args:
+            question: The question to ask
+            
+        Yields:
+            Dict containing the current state of the response
+        """
+        if not self.initialized:
+            self.initialize()
+            
+        if not self.streaming_llm or not self.vector_store:
+            raise ValueError("Streaming LLM or vector store not initialized")
+            
+        try:
+            # Get relevant documents
+            docs = self.vector_store.similarity_search(question, k=5)
+            context = "\n\n".join([doc.page_content for doc in docs])
+            
+            # Create prompt
+            prompt_template = """
+            You are a helpful AI assistant that answers questions based on the provided context.
+            Use the following pieces of context to answer the question at the end.
+            If you don't know the answer, just say that you don't know, don't try to make up an answer.
+            
+            Context:
+            {context}
+            
+            Question: {question}
+            
+            Answer:
+            """
+            
+            PROMPT = PromptTemplate(
+                template=prompt_template, 
+                input_variables=["context", "question"]
+            )
+            
+            # Create callback
+            callback = StreamingResponseCallback()
+            
+            # Format prompt
+            formatted_prompt = PROMPT.format(context=context, question=question)
+            
+            # Stream the answer
+            for chunk in self.streaming_llm.stream(formatted_prompt, config={"callbacks": [callback]}):
+                current_response = callback.get_current_response()
+                yield {
+                    "question": question,
+                    "answer": current_response,
+                    "sources": [],
+                    "finished": False
+                }
+            
+            # Send one final response indicating completion
+            yield {
+                "question": question,
+                "answer": callback.get_current_response(),
+                "sources": [],
+                "finished": True
+            }
+            
+        except Exception as e:
+            logger.error(f"Error streaming answer: {str(e)}")
+            yield {
+                "question": question,
+                "answer": f"Error: {str(e)}",
+                "sources": [],
+                "finished": True
             }
             
     def get_relevant_documents(self, query: str, k: int = 5) -> List[Dict[str, Any]]:
