@@ -6,6 +6,25 @@
     <title>Knowledge Agent Dashboard</title>
     <link href="https://cdn.jsdelivr.net/npm/tailwindcss@2.2.19/dist/tailwind.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .streaming-indicator {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            background-color: #10B981;
+            border-radius: 50%;
+            margin-right: 6px;
+            animation: blink 1s infinite;
+        }
+        @keyframes blink {
+            0% { opacity: 0.2; }
+            50% { opacity: 1; }
+            100% { opacity: 0.2; }
+        }
+        .answer-text-streaming {
+            white-space: pre-wrap;
+        }
+    </style>
 </head>
 <body class="bg-gray-100">
     <div class="container mx-auto px-4 py-8">
@@ -18,14 +37,22 @@
                 <button id="initialize-rag-button" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Initialize RAG System</button>
                 <span id="rag-status" class="ml-2 text-sm text-gray-600"></span>
             </div>
+            <div class="flex items-center mb-3">
+                <input type="checkbox" id="streaming-toggle" class="mr-2" checked>
+                <label for="streaming-toggle" class="text-sm text-gray-700">Use streaming response</label>
+            </div>
             <div class="flex mb-4">
                 <input type="text" id="question-input" placeholder="Ask a question..." class="flex-grow p-2 border rounded-l">
                 <button id="ask-button" class="bg-blue-500 text-white px-4 py-2 rounded-r hover:bg-blue-600">Ask</button>
             </div>
             <div id="answer-container" class="hidden">
                 <div class="bg-gray-50 p-4 rounded mb-4">
-                    <h3 class="font-semibold mb-2">Answer:</h3>
-                    <p id="answer-text" class="text-gray-700"></p>
+                    <div class="flex items-center">
+                        <h3 class="font-semibold mb-2">Answer:</h3>
+                        <div id="streaming-indicator" class="streaming-indicator ml-2 hidden"></div>
+                        <button id="cancel-stream-button" class="ml-auto bg-red-500 text-white px-2 py-1 text-xs rounded hidden hover:bg-red-600">Cancel</button>
+                    </div>
+                    <p id="answer-text" class="text-gray-700 answer-text-streaming"></p>
                 </div>
                 <div class="mb-2">
                     <h3 class="font-semibold">Relevant Documents:</h3>
@@ -78,6 +105,9 @@
     </div>
 
     <script>
+        // 用于存储流式回答的EventSource
+        let eventSource = null;
+        
         async function loadKnowledge() {
             const response = await fetch('/api/knowledge');
             const entries = await response.json();
@@ -204,12 +234,153 @@
             }
         }
         
-        async function askQuestion() {
-            const questionInput = document.getElementById('question-input');
-            const question = questionInput.value.trim();
+        // 取消正在进行的流式回答
+        function cancelStreamingAnswer() {
+            if (eventSource) {
+                eventSource.close();
+                eventSource = null;
+                
+                // 隐藏流式指示器和取消按钮
+                document.getElementById('streaming-indicator').classList.add('hidden');
+                document.getElementById('cancel-stream-button').classList.add('hidden');
+                
+                // 启用提问按钮
+                document.getElementById('ask-button').disabled = false;
+                document.getElementById('question-input').disabled = false;
+            }
+        }
+        
+        // 流式获取回答
+        async function askQuestionStreaming(question) {
+            const answerContainer = document.getElementById('answer-container');
+            const answerText = document.getElementById('answer-text');
+            const streamingIndicator = document.getElementById('streaming-indicator');
+            const cancelButton = document.getElementById('cancel-stream-button');
             
-            if (!question) return;
+            answerContainer.classList.remove('hidden');
+            answerText.textContent = '';
+            streamingIndicator.classList.remove('hidden');
+            cancelButton.classList.remove('hidden');
             
+            // 禁用提问按钮
+            document.getElementById('ask-button').disabled = true;
+            document.getElementById('question-input').disabled = true;
+            
+            try {
+                // 创建EventSource连接
+                const url = `/api/rag/ask/stream`;
+                
+                // 先获取相关文档
+                const docsResponse = await fetch(`/api/rag/relevant-documents?query=${encodeURIComponent(question)}`);
+                const docsResult = await docsResponse.json();
+                
+                // 显示相关文档
+                const relevantDocuments = document.getElementById('relevant-documents');
+                relevantDocuments.innerHTML = docsResult.results.map(doc => `
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-sm text-gray-700">${doc.content}</p>
+                    </div>
+                `).join('');
+                
+                // 使用fetch进行流式请求
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ question })
+                });
+                
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                let buffer = '';
+                
+                // 读取流
+                async function readStream() {
+                    try {
+                        const { done, value } = await reader.read();
+                        
+                        if (done) {
+                            // 流结束，隐藏流式指示器和取消按钮
+                            streamingIndicator.classList.add('hidden');
+                            cancelButton.classList.add('hidden');
+                            
+                            // 启用提问按钮
+                            document.getElementById('ask-button').disabled = false;
+                            document.getElementById('question-input').disabled = false;
+                            return;
+                        }
+                        
+                        // 解码新的数据块
+                        const chunk = decoder.decode(value, { stream: true });
+                        buffer += chunk;
+                        
+                        // 处理完整的SSE消息
+                        const messages = buffer.split('\n\n');
+                        buffer = messages.pop() || ''; // 保留最后一个不完整的消息
+                        
+                        // 处理每个完整的消息
+                        for (const message of messages) {
+                            if (message.startsWith('data: ')) {
+                                try {
+                                    const jsonStr = message.substring(6);
+                                    const data = JSON.parse(jsonStr);
+                                    
+                                    // 更新UI显示答案
+                                    answerText.textContent = data.answer;
+                                    
+                                    // 如果完成了，隐藏流式指示器和取消按钮
+                                    if (data.finished) {
+                                        streamingIndicator.classList.add('hidden');
+                                        cancelButton.classList.add('hidden');
+                                        
+                                        // 启用提问按钮
+                                        document.getElementById('ask-button').disabled = false;
+                                        document.getElementById('question-input').disabled = false;
+                                    }
+                                } catch (e) {
+                                    console.error('Error parsing JSON from SSE:', e);
+                                }
+                            }
+                        }
+                        
+                        // 继续读取流
+                        readStream();
+                    } catch (error) {
+                        console.error('Error reading stream:', error);
+                        streamingIndicator.classList.add('hidden');
+                        cancelButton.classList.add('hidden');
+                        
+                        // 启用提问按钮
+                        document.getElementById('ask-button').disabled = false;
+                        document.getElementById('question-input').disabled = false;
+                    }
+                }
+                
+                // 开始读取流
+                readStream();
+                
+                // 保存取消函数
+                eventSource = {
+                    close: () => {
+                        reader.cancel();
+                    }
+                };
+                
+            } catch (error) {
+                answerText.textContent = `Error: ${error.message}`;
+                streamingIndicator.classList.add('hidden');
+                cancelButton.classList.add('hidden');
+                
+                // 启用提问按钮
+                document.getElementById('ask-button').disabled = false;
+                document.getElementById('question-input').disabled = false;
+            }
+        }
+        
+        // 非流式获取回答
+        async function askQuestionNonStreaming(question) {
             const answerContainer = document.getElementById('answer-container');
             const answerText = document.getElementById('answer-text');
             const relevantDocuments = document.getElementById('relevant-documents');
@@ -247,6 +418,23 @@
                 answerText.textContent = `Error: ${error.message}`;
             }
         }
+        
+        async function askQuestion() {
+            const questionInput = document.getElementById('question-input');
+            const question = questionInput.value.trim();
+            const useStreaming = document.getElementById('streaming-toggle').checked;
+            
+            if (!question) return;
+            
+            // 取消任何正在进行的流式回答
+            cancelStreamingAnswer();
+            
+            if (useStreaming) {
+                askQuestionStreaming(question);
+            } else {
+                askQuestionNonStreaming(question);
+            }
+        }
 
         // Load data initially and refresh every 5 minutes
         loadKnowledge();
@@ -269,6 +457,7 @@
                 askQuestion();
             }
         });
+        document.getElementById('cancel-stream-button').addEventListener('click', cancelStreamingAnswer);
     </script>
 </body>
 </html> 
