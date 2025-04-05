@@ -1,5 +1,6 @@
 from flask import Flask, render_template, jsonify
 from deep_strat.knowledge_agent import KnowledgeEntry, Session
+from deep_strat.knowledge_agent import KnowledgeEntry, Session
 from sqlalchemy import desc
 import json
 from deep_strat.search_api import search_bp

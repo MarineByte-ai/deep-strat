@@ -1,5 +1,7 @@
 # Deep Strat - Knowledge Agent with RAG
+# Deep Strat - Knowledge Agent with RAG
 
+A knowledge management system with RAG-based question answering capabilities.
 A knowledge management system with RAG-based question answering capabilities.
 
 ## Features
@@ -18,6 +20,7 @@ A knowledge management system with RAG-based question answering capabilities.
 
 ### Installation
 
+1. Clone the repository:
 1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/deep-strat.git
@@ -66,6 +69,9 @@ python check_chroma.py
 
 2. The script will create the necessary directory if it doesn't exist.
 
+## Usage
+
+### Starting the Application
 ## Usage
 
 ### Starting the Application
@@ -128,4 +134,5 @@ pip install --upgrade pip
 
 ## License
 
+MIT
 MIT
