@@ -11,6 +11,31 @@
     <div class="container mx-auto px-4 py-8">
         <h1 class="text-3xl font-bold mb-8">Knowledge Agent Dashboard</h1>
         
+        <!-- RAG Question Answering -->
+        <div class="bg-white rounded-lg shadow p-6 mb-8">
+            <h2 class="text-xl font-semibold mb-4">Ask Questions (RAG)</h2>
+            <div class="mb-4">
+                <button id="initialize-rag-button" class="bg-green-500 text-white px-4 py-2 rounded hover:bg-green-600">Initialize RAG System</button>
+                <span id="rag-status" class="ml-2 text-sm text-gray-600"></span>
+            </div>
+            <div class="flex mb-4">
+                <input type="text" id="question-input" placeholder="Ask a question..." class="flex-grow p-2 border rounded-l">
+                <button id="ask-button" class="bg-blue-500 text-white px-4 py-2 rounded-r hover:bg-blue-600">Ask</button>
+            </div>
+            <div id="answer-container" class="hidden">
+                <div class="bg-gray-50 p-4 rounded mb-4">
+                    <h3 class="font-semibold mb-2">Answer:</h3>
+                    <p id="answer-text" class="text-gray-700"></p>
+                </div>
+                <div class="mb-2">
+                    <h3 class="font-semibold">Relevant Documents:</h3>
+                </div>
+                <div id="relevant-documents" class="space-y-2">
+                    <!-- Relevant documents will be displayed here -->
+                </div>
+            </div>
+        </div>
+        
         <!-- Search Form -->
         <div class="bg-white rounded-lg shadow p-6 mb-8">
             <h2 class="text-xl font-semibold mb-4">Search Knowledge Base</h2>
@@ -148,6 +173,80 @@
                 `).join('')}
             `;
         }
+        
+        async function initializeRAG() {
+            const statusElement = document.getElementById('rag-status');
+            statusElement.textContent = 'Initializing...';
+            
+            try {
+                const response = await fetch('/api/rag/initialize', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const result = await response.json();
+                
+                if (result.status === 'success') {
+                    statusElement.textContent = 'RAG system initialized successfully';
+                    statusElement.classList.remove('text-red-500');
+                    statusElement.classList.add('text-green-500');
+                } else {
+                    statusElement.textContent = `Error: ${result.message}`;
+                    statusElement.classList.remove('text-green-500');
+                    statusElement.classList.add('text-red-500');
+                }
+            } catch (error) {
+                statusElement.textContent = `Error: ${error.message}`;
+                statusElement.classList.remove('text-green-500');
+                statusElement.classList.add('text-red-500');
+            }
+        }
+        
+        async function askQuestion() {
+            const questionInput = document.getElementById('question-input');
+            const question = questionInput.value.trim();
+            
+            if (!question) return;
+            
+            const answerContainer = document.getElementById('answer-container');
+            const answerText = document.getElementById('answer-text');
+            const relevantDocuments = document.getElementById('relevant-documents');
+            
+            answerContainer.classList.remove('hidden');
+            answerText.textContent = 'Thinking...';
+            relevantDocuments.innerHTML = '';
+            
+            try {
+                // Get answer from RAG system
+                const response = await fetch('/api/rag/ask', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ question })
+                });
+                
+                const result = await response.json();
+                
+                // Display answer
+                answerText.textContent = result.answer;
+                
+                // Get relevant documents
+                const docsResponse = await fetch(`/api/rag/relevant-documents?query=${encodeURIComponent(question)}`);
+                const docsResult = await docsResponse.json();
+                
+                // Display relevant documents
+                relevantDocuments.innerHTML = docsResult.results.map(doc => `
+                    <div class="bg-gray-50 p-3 rounded">
+                        <p class="text-sm text-gray-700">${doc.content}</p>
+                    </div>
+                `).join('');
+            } catch (error) {
+                answerText.textContent = `Error: ${error.message}`;
+            }
+        }
 
         // Load data initially and refresh every 5 minutes
         loadKnowledge();
@@ -159,6 +258,15 @@
         document.getElementById('search-input').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 searchKnowledge();
+            }
+        });
+        
+        // Add event listeners for RAG
+        document.getElementById('initialize-rag-button').addEventListener('click', initializeRAG);
+        document.getElementById('ask-button').addEventListener('click', askQuestion);
+        document.getElementById('question-input').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                askQuestion();
             }
         });
     </script>

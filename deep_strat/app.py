@@ -3,9 +3,11 @@ from deep_strat.knowledge_agent import KnowledgeEntry, Session
 from sqlalchemy import desc
 import json
 from deep_strat.search_api import search_bp
+from deep_strat.rag_api import rag_bp
 
 app = Flask(__name__)
 app.register_blueprint(search_bp)
+app.register_blueprint(rag_bp)
 
 @app.route('/')
 def index():
