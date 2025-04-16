@@ -257,3 +257,4 @@ dist/
 /node_modules/
 
 chroma_db
+.cursor/rules/my-rule.mdc

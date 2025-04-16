@@ -9,7 +9,7 @@ load_dotenv()
 
 # ChromaDB settings
 CHROMA_PERSIST_DIRECTORY = os.getenv('CHROMA_PERSIST_DIRECTORY', './chroma_db')
-
+"stream frontend: clear dialog, prompt change, agentic rag, 复制，点赞，用户数据库"
 def check_chroma_directory():
     """Check if ChromaDB directory exists and is accessible"""
     print(f"Checking ChromaDB directory at {CHROMA_PERSIST_DIRECTORY}...")

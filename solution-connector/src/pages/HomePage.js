@@ -1,10 +1,42 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 
 const HomePage = () => {
   const [message, setMessage] = useState('');
   const [chatMessages, setChatMessages] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [streamingResponse, setStreamingResponse] = useState('');
+  const eventSourceRef = useRef(null);
+  
+  // Style for typing indicator
+  const typingIndicatorStyle = {
+    display: 'inline-block',
+    marginLeft: '3px',
+    animation: 'blink 1s infinite',
+  };
+  
+  // CSS keyframes for blinking animation
+  useEffect(() => {
+    // Add keyframe animation to head if it doesn't exist
+    if (!document.querySelector('#typing-animation')) {
+      const style = document.createElement('style');
+      style.id = 'typing-animation';
+      style.innerHTML = `
+        @keyframes blink {
+          0% { opacity: 1; }
+          50% { opacity: 0; }
+          100% { opacity: 1; }
+        }
+      `;
+      document.head.appendChild(style);
+    }
+    
+    return () => {
+      if (eventSourceRef.current) {
+        eventSourceRef.current.close();
+      }
+    };
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -15,10 +47,19 @@ const HomePage = () => {
     setChatMessages(prev => [...prev, { sender: 'user', text: userMessage }]);
     setMessage('');
     setIsLoading(true);
+    setStreamingResponse('');
 
-    // --- Replace Simulation with API Call ---
+    // Add initial empty AI message that will be updated during streaming
+    setChatMessages(prev => [...prev, { sender: 'ai', text: '' }]);
+
+    // Clean up previous event source if it exists
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+    }
+
     try {
-      const response = await fetch('http://localhost:5000/api/rag/ask', {
+      // Make a POST request with the correct content type
+      const response = await fetch('http://localhost:5000/api/rag/ask/stream', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -30,21 +71,97 @@ const HomePage = () => {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const data = await response.json();
-      const aiResponse = data.answer || "Sorry, I couldn't find an answer.";
+      // Set up streaming with ReadableStream
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      // Add AI response
-      setChatMessages(prev => [...prev, { sender: 'ai', text: aiResponse }]);
-
+      // Function to process chunks of data
+      const processStream = async () => {
+        while (true) {
+          const { value, done } = await reader.read();
+          
+          if (done) {
+            // Stream is complete
+            setIsLoading(false);
+            break;
+          }
+          
+          // Decode the chunk and add to buffer
+          buffer += decoder.decode(value, { stream: true });
+          
+          // Process complete SSE messages
+          const messages = buffer.split('\n\n');
+          buffer = messages.pop() || ''; // Keep the last incomplete chunk in the buffer
+          
+          for (const message of messages) {
+            if (message.startsWith('data: ')) {
+              try {
+                const jsonData = JSON.parse(message.substring(6));
+                
+                // Update the streaming response
+                setStreamingResponse(jsonData.answer);
+                
+                // Update the last message in the chat
+                setChatMessages(prev => {
+                  const newMessages = [...prev];
+                  newMessages[newMessages.length - 1] = { 
+                    sender: 'ai', 
+                    text: jsonData.answer 
+                  };
+                  return newMessages;
+                });
+                
+                // If finished, mark as not loading
+                if (jsonData.finished) {
+                  setIsLoading(false);
+                }
+              } catch (error) {
+                console.error("Error parsing SSE data:", error, message);
+              }
+            }
+          }
+        }
+      };
+      
+      // Start processing the stream
+      processStream().catch(error => {
+        console.error("Error processing stream:", error);
+        setIsLoading(false);
+        
+        // Update the AI message with an error
+        setChatMessages(prev => {
+          const newMessages = [...prev];
+          const lastMessage = newMessages[newMessages.length - 1];
+          
+          // Only update if it's empty (no partial response was received)
+          if (lastMessage.sender === 'ai' && !lastMessage.text) {
+            newMessages[newMessages.length - 1] = { 
+              sender: 'ai', 
+              text: 'Error: Problem processing the response stream.' 
+            };
+          }
+          return newMessages;
+        });
+      });
+      
     } catch (error) {
-      console.error("Error fetching AI response:", error);
+      console.error("Error setting up streaming:", error);
       // Add more specific error message to chat
       const displayError = error.message || "An unknown error occurred. Check the console.";
-      setChatMessages(prev => [...prev, { sender: 'ai', text: `Error: ${displayError}` }]);
-    } finally {
+      
+      // Replace the empty AI message with an error message
+      setChatMessages(prev => {
+        const newMessages = [...prev];
+        newMessages[newMessages.length - 1] = { 
+          sender: 'ai', 
+          text: `Error: ${displayError}` 
+        };
+        return newMessages;
+      });
+      
       setIsLoading(false);
     }
-    // --- End API Call ---
   };
 
   return (
@@ -139,13 +256,11 @@ const HomePage = () => {
                     }}
                   >
                     {msg.text}
+                    {msg.sender === 'ai' && isLoading && index === chatMessages.length - 1 && (
+                      <span style={typingIndicatorStyle}>▌</span>
+                    )}
                   </div>
                 ))
-              )}
-              {isLoading && (
-                <div style={{ padding: '0.5rem 1rem', textAlign: 'left', color: '#718096' }}>
-                  <i>Thinking...</i>
-                </div>
               )}
             </div>
             <form onSubmit={handleSubmit} className="chat-input">
@@ -154,9 +269,10 @@ const HomePage = () => {
                 value={message}
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder="Type your message here..."
+                disabled={isLoading}
               />
               <button type="submit" disabled={isLoading}>
-                {isLoading ? 'Sending...' : 'Send'}
+                {isLoading ? 'Generating...' : 'Send'}
               </button>
             </form>
           </div>
