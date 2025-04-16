@@ -13,6 +13,10 @@ from pydantic import SecretStr
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langchain_core.callbacks.base import BaseCallbackHandler
+from langchain_core.embeddings import Embeddings  # Import base class
+
+# Import Google GenAI
+import google.generativeai as genai
 
 # Configure logging
 logging.basicConfig(
@@ -30,21 +34,44 @@ if not OPENAI_API_KEY:
     logger.error("OpenAI API key not found. Please set OPENAI_API_KEY in your .env file.")
     raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY in your .env file.")
 
-# Get Voyage AI API key
+# Get Google API key
+GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
+if not GOOGLE_API_KEY:
+    logger.error("Google API key not found. Please set GOOGLE_API_KEY in your .env file.")
+    raise ValueError("Google API key not found. Please set GOOGLE_API_KEY in your .env file.")
+
+# Get Voyage API key
 VOYAGE_API_KEY = os.getenv('VOYAGE_API_KEY')
-if not VOYAGE_API_KEY:
-    logger.error("Voyage AI API key not found. Please set VOYAGE_API_KEY in your .env file.")
-    raise ValueError("Voyage AI API key not found. Please set VOYAGE_API_KEY in your .env file.")
+
+# Initialize Google GenAI client
+genai.configure(api_key=GOOGLE_API_KEY)
+GOOGLE_GENAI_CLIENT = genai.GenerativeModel("gemini-pro")
 
 # Convert API keys to SecretStr
 SECRET_OPENAI_API_KEY = SecretStr(OPENAI_API_KEY)
-SECRET_VOYAGE_API_KEY = SecretStr(VOYAGE_API_KEY)
 
 # ChromaDB settings
 CHROMA_PERSIST_DIRECTORY = os.getenv('CHROMA_PERSIST_DIRECTORY', './chroma_db')
 COLLECTION_NAME = "knowledge_base"
 # Default Voyage AI model to use
 VOYAGE_MODEL = os.getenv('VOYAGE_MODEL', 'voyage-3')
+
+# Google Embedding Settings
+GOOGLE_EMBEDDING_MODEL = os.getenv('GOOGLE_EMBEDDING_MODEL', 'text-embedding-005') # Changed model name, assuming 005 based on user prompt
+GOOGLE_EMBEDDING_TASK_TYPE = os.getenv('GOOGLE_EMBEDDING_TASK_TYPE', 'RETRIEVAL_DOCUMENT')
+GOOGLE_EMBEDDING_TITLE = os.getenv('GOOGLE_EMBEDDING_TITLE') # Optional
+# Attempt to read output dimensionality from env, default to 768 if not set or invalid
+try:
+    GOOGLE_EMBEDDING_DIMENSIONALITY = int(os.getenv('GOOGLE_EMBEDDING_DIMENSIONALITY', 768))
+except (ValueError, TypeError):
+     GOOGLE_EMBEDDING_DIMENSIONALITY = 768 # Default
+
+logger.info(f"Using Google Embedding Model: {GOOGLE_EMBEDDING_MODEL}")
+logger.info(f"Google Embedding Task Type: {GOOGLE_EMBEDDING_TASK_TYPE}")
+if GOOGLE_EMBEDDING_TITLE:
+    logger.info(f"Google Embedding Title: {GOOGLE_EMBEDDING_TITLE}")
+if GOOGLE_EMBEDDING_DIMENSIONALITY:
+     logger.info(f"Google Embedding Dimensionality: {GOOGLE_EMBEDDING_DIMENSIONALITY}")
 
 
 class StreamingResponseCallback(BaseCallbackHandler):
@@ -62,17 +89,70 @@ class StreamingResponseCallback(BaseCallbackHandler):
         return self.text
 
 
+# Custom Google GenAI Embedding class compatible with LangChain
+class GoogleGenAIEmbeddings(Embeddings):
+    def __init__(
+        self,
+        model: str = GOOGLE_EMBEDDING_MODEL,
+        task_type: str = GOOGLE_EMBEDDING_TASK_TYPE,
+        title: Optional[str] = GOOGLE_EMBEDDING_TITLE,
+        output_dimensionality: Optional[int] = GOOGLE_EMBEDDING_DIMENSIONALITY
+    ):
+        self.model = model
+        self.task_type = task_type
+        self.title = title
+        self.output_dimensionality = output_dimensionality
+
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        """Embed search docs."""
+        try:
+            embeddings = []
+            for text in texts:
+                result = genai.embed_content(
+                    model=self.model,
+                    content=text,
+                    task_type=self.task_type,
+                    title=self.title
+                )
+                if result.embedding:
+                    embeddings.append(result.embedding)
+                else:
+                    embeddings.append([0.0] * self.output_dimensionality)  # Fallback
+            return embeddings
+        except Exception as e:
+            logger.error(f"Error embedding documents with Google GenAI: {e}")
+            # Handle error appropriately, return empty embeddings
+            return [[0.0] * self.output_dimensionality for _ in texts]
+
+
+    def embed_query(self, text: str) -> List[float]:
+        """Embed query text."""
+        try:
+            result = genai.embed_content(
+                model=self.model,
+                content=text,
+                task_type="RETRIEVAL_QUERY",
+                title=self.title
+            )
+            if result.embedding:
+                return result.embedding
+            else:
+                logger.error(f"No embedding found in response for query: {text}")
+                return [0.0] * self.output_dimensionality  # Return zeros as fallback
+        except Exception as e:
+            logger.error(f"Error embedding query with Google GenAI: {e}")
+            return [0.0] * self.output_dimensionality  # Return zeros as fallback
+
+
 class RAGQuestionAnswerer:
     def __init__(self):
         """Initialize the RAG question answering system"""
-        if not VOYAGE_API_KEY:
+        # Check for Voyage API key only if we're using Voyage embeddings
+        if os.getenv('USE_VOYAGE_EMBEDDINGS', 'false').lower() == 'true' and not VOYAGE_API_KEY:
             raise ValueError("Voyage API key not found. Please set VOYAGE_API_KEY in your .env file.")
             
-        self.embeddings = VoyageAIEmbeddings(
-            api_key=SecretStr(VOYAGE_API_KEY),
-            model=VOYAGE_MODEL,
-            batch_size=8  # Default batch size
-        )
+        # Initialize Google GenAI Embeddings
+        self.embeddings = GoogleGenAIEmbeddings()
         self.vector_store = None  # type: ignore
         self.qa_chain = None  # type: ignore
         self.initialized = False
