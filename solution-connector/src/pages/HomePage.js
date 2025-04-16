@@ -4,24 +4,47 @@ import { Link } from 'react-router-dom';
 const HomePage = () => {
   const [message, setMessage] = useState('');
   const [chatMessages, setChatMessages] = useState([]);
+  const [isLoading, setIsLoading] = useState(false);
 
-  const handleSubmit = (e) => {
+  const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!message.trim()) return;
-    
-    // Add user message
-    setChatMessages([...chatMessages, { sender: 'user', text: message }]);
-    
-    // Simulate AI response
-    setTimeout(() => {
-      setChatMessages(prev => [...prev, { 
-        sender: 'ai', 
-        text: 'Thank you for your question. This is a simulated response from the RAG database.' 
-      }]);
-    }, 1000);
-    
-    // Clear input
+    const userMessage = message.trim();
+    if (!userMessage) return;
+
+    // Add user message immediately
+    setChatMessages(prev => [...prev, { sender: 'user', text: userMessage }]);
     setMessage('');
+    setIsLoading(true);
+
+    // --- Replace Simulation with API Call ---
+    try {
+      const response = await fetch('http://localhost:5000/api/rag/ask', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ question: userMessage }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const data = await response.json();
+      const aiResponse = data.answer || "Sorry, I couldn't find an answer.";
+
+      // Add AI response
+      setChatMessages(prev => [...prev, { sender: 'ai', text: aiResponse }]);
+
+    } catch (error) {
+      console.error("Error fetching AI response:", error);
+      // Add more specific error message to chat
+      const displayError = error.message || "An unknown error occurred. Check the console.";
+      setChatMessages(prev => [...prev, { sender: 'ai', text: `Error: ${displayError}` }]);
+    } finally {
+      setIsLoading(false);
+    }
+    // --- End API Call ---
   };
 
   return (
@@ -119,6 +142,11 @@ const HomePage = () => {
                   </div>
                 ))
               )}
+              {isLoading && (
+                <div style={{ padding: '0.5rem 1rem', textAlign: 'left', color: '#718096' }}>
+                  <i>Thinking...</i>
+                </div>
+              )}
             </div>
             <form onSubmit={handleSubmit} className="chat-input">
               <input 
@@ -127,7 +155,9 @@ const HomePage = () => {
                 onChange={(e) => setMessage(e.target.value)}
                 placeholder="Type your message here..."
               />
-              <button type="submit">Send</button>
+              <button type="submit" disabled={isLoading}>
+                {isLoading ? 'Sending...' : 'Send'}
+              </button>
             </form>
           </div>
         </div>
