@@ -1,22 +1,22 @@
 import os
-from typing import List, Dict, Any, Optional, Iterator
+from typing import List, Dict, Any, Optional, Iterator, cast
 import logging
 from dotenv import load_dotenv
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain.chains import RetrievalQA
-from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-from langchain_voyageai import VoyageAIEmbeddings
+from langchain_openai import ChatOpenAI
 from langchain.prompts import PromptTemplate
 from deep_strat.knowledge_agent import KnowledgeEntry, Session
 from pydantic import SecretStr
 from langchain.callbacks.streaming_stdout import StreamingStdOutCallbackHandler
 from langchain_core.runnables import RunnableConfig
 from langchain_core.callbacks.base import BaseCallbackHandler
-from langchain_core.embeddings import Embeddings  # Import base class
+from langchain_core.embeddings import Embeddings
 
 # Import Google GenAI
 import google.generativeai as genai
+import numpy as np
 
 # Configure logging
 logging.basicConfig(
@@ -40,12 +40,9 @@ if not GOOGLE_API_KEY:
     logger.error("Google API key not found. Please set GOOGLE_API_KEY in your .env file.")
     raise ValueError("Google API key not found. Please set GOOGLE_API_KEY in your .env file.")
 
-# Get Voyage API key
-VOYAGE_API_KEY = os.getenv('VOYAGE_API_KEY')
-
-# Initialize Google GenAI client
+# Configure Google GenAI - Called once here
 genai.configure(api_key=GOOGLE_API_KEY)
-GOOGLE_GENAI_CLIENT = genai.GenerativeModel("gemini-pro")
+logger.info("Configured Google Generative AI API.")
 
 # Convert API keys to SecretStr
 SECRET_OPENAI_API_KEY = SecretStr(OPENAI_API_KEY)
@@ -53,25 +50,13 @@ SECRET_OPENAI_API_KEY = SecretStr(OPENAI_API_KEY)
 # ChromaDB settings
 CHROMA_PERSIST_DIRECTORY = os.getenv('CHROMA_PERSIST_DIRECTORY', './chroma_db')
 COLLECTION_NAME = "knowledge_base"
-# Default Voyage AI model to use
-VOYAGE_MODEL = os.getenv('VOYAGE_MODEL', 'voyage-3')
 
-# Google Embedding Settings
-GOOGLE_EMBEDDING_MODEL = os.getenv('GOOGLE_EMBEDDING_MODEL', 'text-embedding-005') # Changed model name, assuming 005 based on user prompt
-GOOGLE_EMBEDDING_TASK_TYPE = os.getenv('GOOGLE_EMBEDDING_TASK_TYPE', 'RETRIEVAL_DOCUMENT')
-GOOGLE_EMBEDDING_TITLE = os.getenv('GOOGLE_EMBEDDING_TITLE') # Optional
-# Attempt to read output dimensionality from env, default to 768 if not set or invalid
-try:
-    GOOGLE_EMBEDDING_DIMENSIONALITY = int(os.getenv('GOOGLE_EMBEDDING_DIMENSIONALITY', 768))
-except (ValueError, TypeError):
-     GOOGLE_EMBEDDING_DIMENSIONALITY = 768 # Default
+# Google Embedding Model settings
+GOOGLE_EMBEDDING_MODEL_NAME = "models/gemini-embed-text-experimental-0307"
+EMBEDDING_DIMENSIONALITY = 1024 # Experimental model uses 1024 dimensions
 
-logger.info(f"Using Google Embedding Model: {GOOGLE_EMBEDDING_MODEL}")
-logger.info(f"Google Embedding Task Type: {GOOGLE_EMBEDDING_TASK_TYPE}")
-if GOOGLE_EMBEDDING_TITLE:
-    logger.info(f"Google Embedding Title: {GOOGLE_EMBEDDING_TITLE}")
-if GOOGLE_EMBEDDING_DIMENSIONALITY:
-     logger.info(f"Google Embedding Dimensionality: {GOOGLE_EMBEDDING_DIMENSIONALITY}")
+logger.info(f"Using Google Embedding Model: {GOOGLE_EMBEDDING_MODEL_NAME}")
+logger.info(f"Embedding Dimensionality: {EMBEDDING_DIMENSIONALITY}")
 
 
 class StreamingResponseCallback(BaseCallbackHandler):
@@ -93,66 +78,79 @@ class StreamingResponseCallback(BaseCallbackHandler):
 class GoogleGenAIEmbeddings(Embeddings):
     def __init__(
         self,
-        model: str = GOOGLE_EMBEDDING_MODEL,
-        task_type: str = GOOGLE_EMBEDDING_TASK_TYPE,
-        title: Optional[str] = GOOGLE_EMBEDDING_TITLE,
-        output_dimensionality: Optional[int] = GOOGLE_EMBEDDING_DIMENSIONALITY
+        model_name: str = GOOGLE_EMBEDDING_MODEL_NAME,
+        dimensions: int = EMBEDDING_DIMENSIONALITY
     ):
-        self.model = model
-        self.task_type = task_type
-        self.title = title
-        self.output_dimensionality = output_dimensionality
+        self.model_name = model_name
+        self.dimensions = dimensions
+        logger.info(f"Initialized GoogleGenAIEmbeddings with model {self.model_name}")
+        # No specific model object initialization needed for genai.embed_content
 
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         """Embed search docs."""
         try:
             embeddings = []
-            for text in texts:
-                result = genai.embed_content(
-                    model=self.model,
-                    content=text,
-                    task_type=self.task_type,
-                    title=self.title
-                )
-                if result.embedding:
-                    embeddings.append(result.embedding)
-                else:
-                    embeddings.append([0.0] * self.output_dimensionality)  # Fallback
+            for text_batch in self._batch_texts(texts):
+                 # Use RETRIEVAL_DOCUMENT task type for document embedding
+                 result = genai.embed_content(
+                     model=self.model_name,
+                     content=text_batch,
+                     task_type="RETRIEVAL_DOCUMENT"
+                 )
+                 # Ensure the response format contains 'embedding'
+                 if 'embedding' in result and isinstance(result['embedding'], list):
+                     embeddings.extend(result['embedding'])
+                 else:
+                     logger.error(f"Unexpected response format from embed_content for documents: {result}")
+                     # Add fallback zero vectors for the entire batch
+                     embeddings.extend([[0.0] * self.dimensions for _ in text_batch])
+            
+            # Check if the number of embeddings matches the number of texts
+            if len(embeddings) != len(texts):
+                logger.warning(f"Mismatch between number of texts ({len(texts)}) and embeddings ({len(embeddings)}). Using fallbacks.")
+                # Fallback: return zero vectors for all if mismatch occurs
+                return [[0.0] * self.dimensions for _ in texts]
+                
             return embeddings
         except Exception as e:
-            logger.error(f"Error embedding documents with Google GenAI: {e}")
-            # Handle error appropriately, return empty embeddings
-            return [[0.0] * self.output_dimensionality for _ in texts]
-
+            logger.error(f"Error in embed_documents with Google GenAI: {e}")
+            return [[0.0] * self.dimensions for _ in texts]
 
     def embed_query(self, text: str) -> List[float]:
         """Embed query text."""
         try:
+            # Use RETRIEVAL_QUERY task type for query embedding
             result = genai.embed_content(
-                model=self.model,
+                model=self.model_name,
                 content=text,
-                task_type="RETRIEVAL_QUERY",
-                title=self.title
+                task_type="RETRIEVAL_QUERY"
             )
-            if result.embedding:
-                return result.embedding
+            # Ensure the response format contains 'embedding'
+            if 'embedding' in result and isinstance(result['embedding'], list):
+                return result['embedding']
             else:
-                logger.error(f"No embedding found in response for query: {text}")
-                return [0.0] * self.output_dimensionality  # Return zeros as fallback
+                logger.error(f"Unexpected response format from embed_content for query: {result}")
+                return [0.0] * self.dimensions
         except Exception as e:
-            logger.error(f"Error embedding query with Google GenAI: {e}")
-            return [0.0] * self.output_dimensionality  # Return zeros as fallback
+            logger.error(f"Error in embed_query with Google GenAI: {e}")
+            return [0.0] * self.dimensions
+            
+    def _batch_texts(self, texts: List[str], batch_size: int = 100) -> Iterator[List[str]]:
+        """Yield successive batch_size chunks from texts."""
+        for i in range(0, len(texts), batch_size):
+            yield texts[i:i + batch_size]
 
 
 class RAGQuestionAnswerer:
     def __init__(self):
-        """Initialize the RAG question answering system"""
-        # Check for Voyage API key only if we're using Voyage embeddings
-        if os.getenv('USE_VOYAGE_EMBEDDINGS', 'false').lower() == 'true' and not VOYAGE_API_KEY:
-            raise ValueError("Voyage API key not found. Please set VOYAGE_API_KEY in your .env file.")
+        """Initialize the RAG question answering system using Google GenAI Embeddings"""
+        # Initialize Google GenAI Embedding model
+        try:
+            self.embeddings = GoogleGenAIEmbeddings()
+        except Exception as e:
+            logger.error(f"Failed to initialize GoogleGenAIEmbeddings: {e}")
+            raise RuntimeError("Embedding model initialization failed. Check Google API Key and config.") from e
             
-        # Initialize Google GenAI Embeddings
-        self.embeddings = GoogleGenAIEmbeddings()
         self.vector_store = None  # type: ignore
         self.qa_chain = None  # type: ignore
         self.initialized = False
@@ -175,13 +173,17 @@ class RAGQuestionAnswerer:
             self.vector_store = Chroma(
                 persist_directory=CHROMA_PERSIST_DIRECTORY,
                 embedding_function=self.embeddings,
-                collection_name=COLLECTION_NAME,
-                collection_metadata={"hnsw:space": "cosine"}
+                collection_name=COLLECTION_NAME
+                # collection_metadata={"hnsw:space": "cosine"} # Let Chroma handle defaults
             )
             
             logger.info(f"Connected to ChromaDB at {CHROMA_PERSIST_DIRECTORY}")
         except Exception as e:
             logger.error(f"Failed to connect to ChromaDB: {str(e)}")
+            # Check for dimension mismatch error specifically
+            if "Expected embedding dimension" in str(e) or "got" in str(e).lower() and "expected" in str(e).lower():
+                 logger.error(f"Potential dimension mismatch between model ({EMBEDDING_DIMENSIONALITY}d) and existing Chroma collection.")
+                 logger.error("If this is a new setup, try deleting the ./chroma_db directory.")
             raise
             
         # Initialize the QA chain
@@ -252,19 +254,58 @@ class RAGQuestionAnswerer:
                 
             # Prepare documents for embedding
             documents = []
-            for entry in entries:
+            metadatas = []
+            ids = []
+            for i, entry in enumerate(entries):
                 # Combine topic and content for better context
                 text = f"Topic: {entry.topic}\n\nContent: {entry.content}"
                 documents.append(text)
+                metadatas.append({"source": f"db_entry_{entry.id}", "topic": entry.topic})
+                ids.append(f"entry_{entry.id}") # Ensure unique IDs
                 
             # Split documents into chunks
             text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=1000,
                 chunk_overlap=200
             )
-            chunks = text_splitter.create_documents(documents)
-            logger.info(f"Created {len(chunks)} text chunks from {len(documents)} documents")
-            
+            # Note: create_documents may not preserve metadata order perfectly with simple list passing
+            # If strict metadata mapping is needed, consider processing chunks individually or using a different approach
+            all_docs_content = "\n".join(documents) # Combine all documents into one string for splitting if needed
+            chunks_texts = text_splitter.split_text(all_docs_content)
+
+            # Rebuild metadata and IDs based on split chunks - this is complex and might need adjustment
+            # based on how text_splitter works and desired metadata granularity.
+            # This is a simplified approach assuming metadata applies to the original document.
+            chunk_metadatas = []
+            chunk_ids = []
+            current_pos = 0
+            for i, original_doc in enumerate(documents):
+                original_doc_len = len(original_doc)
+                doc_chunks = text_splitter.split_text(original_doc) # Split original doc to count chunks
+                for j in range(len(doc_chunks)):
+                    # Find which chunk in chunks_texts corresponds to this part - requires careful index mapping
+                    # This part is tricky and likely needs a more robust mapping strategy
+                    # For now, assigning metadata based on original doc index
+                    chunk_index_in_all = -1 # Placeholder - needs logic to find the right chunk
+                    # Simple approximation: Assume chunks maintain order relative to original docs
+                    approx_chunk_count_before = sum(len(text_splitter.split_text(d)) for d in documents[:i])
+                    chunk_index_in_all = approx_chunk_count_before + j
+
+                    if chunk_index_in_all < len(chunks_texts):
+                        chunk_metadatas.append(metadatas[i])
+                        chunk_ids.append(f"chunk_{ids[i]}_{j}")
+                    else:
+                         logger.warning(f"Metadata/ID assignment issue: index {chunk_index_in_all} out of bounds for {len(chunks_texts)} chunks.")
+
+            # Ensure lists have the same length as chunks_texts
+            chunk_metadatas = chunk_metadatas[:len(chunks_texts)]
+            chunk_ids = chunk_ids[:len(chunks_texts)]
+
+            logger.info(f"Created {len(chunks_texts)} text chunks from {len(documents)} documents")
+            if len(chunk_metadatas) != len(chunks_texts) or len(chunk_ids) != len(chunks_texts):
+                 logger.error(f"Mismatch after chunking: {len(chunks_texts)} chunks, {len(chunk_metadatas)} metadatas, {len(chunk_ids)} ids. Aborting add.")
+                 return
+
             # Store in ChromaDB
             if not self.initialized:
                 self.initialize()
@@ -272,10 +313,25 @@ class RAGQuestionAnswerer:
             if not self.vector_store:
                 raise ValueError("Vector store not initialized")
                 
-            # Add documents to the vector store
-            self.vector_store.add_documents(chunks)
-            # ChromaDB automatically persists changes
-            logger.info(f"Added {len(chunks)} chunks to the vector store")
+            # Add documents to the vector store with IDs
+            try:
+                 # ChromaDB API might expect texts, metadatas, ids
+                 self.vector_store.add_texts(texts=chunks_texts, metadatas=chunk_metadatas, ids=chunk_ids)
+                 logger.info(f"Added {len(chunks_texts)} chunks to the vector store")
+            except AttributeError:
+                 logger.warning("Chroma instance does not have 'add_texts'. Trying 'add_documents'...")
+                 try:
+                     # Fallback for older LangChain Chroma or direct Chroma usage
+                     from langchain_core.documents import Document # Import only if needed
+                     docs_to_add = [Document(page_content=text, metadata=meta) for text, meta in zip(chunks_texts, chunk_metadatas)]
+                     self.vector_store.add_documents(docs_to_add, ids=chunk_ids)
+                     logger.info(f"Added {len(chunks_texts)} chunks using add_documents method.")
+                 except Exception as add_doc_e:
+                     logger.error(f"Failed to add documents using add_documents: {add_doc_e}")
+                     raise add_doc_e
+            except Exception as e:
+                 logger.error(f"Failed to add documents to Chroma: {e}")
+                 raise e
             
         finally:
             session.close()
@@ -288,14 +344,29 @@ class RAGQuestionAnswerer:
         if not self.qa_chain:
             raise ValueError("QA chain not initialized")
             
+        # Add check for vector_store before using it
+        if not self.vector_store:
+             logger.error("Vector store not initialized in answer_question")
+             return {
+                 "question": question,
+                 "answer": "Error: Vector store not available.",
+                 "sources": []
+             }
+             
+        vector_store = self.vector_store # Assign to local variable after check
+        
         try:
             # Get answer from the QA chain
+            # Retrieve documents to include sources using the local variable
+            docs = vector_store.similarity_search(question, k=5)
+            source_info = [doc.metadata.get('source', 'Unknown') for doc in docs]
+            
             result = self.qa_chain({"query": question})
             
             return {
                 "question": question,
                 "answer": result["result"],
-                "sources": []  # We could add source tracking here if needed
+                "sources": source_info
             }
         except Exception as e:
             logger.error(f"Error answering question: {str(e)}")
@@ -306,25 +377,31 @@ class RAGQuestionAnswerer:
             }
             
     def streaming_answer_question(self, question: str) -> Iterator[Dict[str, Any]]:
-        """
-        Answer a question using the RAG system with streaming output.
-        
-        Args:
-            question: The question to ask
-            
-        Yields:
-            Dict containing the current state of the response
-        """
+        """Answer a question using the RAG system with streaming output."""
         if not self.initialized:
             self.initialize()
-            
-        if not self.streaming_llm or not self.vector_store:
-            raise ValueError("Streaming LLM or vector store not initialized")
-            
+
+        if not self.streaming_llm:
+            raise ValueError("Streaming LLM not initialized")
+        # Re-add explicit check for vector_store before the try block
+        if not self.vector_store:
+             logger.error("Vector store not initialized in streaming_answer_question")
+             yield {
+                 "question": question,
+                 "answer": "Error: Vector store not available.",
+                 "sources": [],
+                 "finished": True
+             }
+             return # Exit the generator
+
+        # Assign to local variable after check to help type checker
+        vector_store = self.vector_store
+
         try:
-            # Get relevant documents
-            docs = self.vector_store.similarity_search(question, k=5)
+            # Use the local variable which is guaranteed not None
+            docs = vector_store.similarity_search(question, k=5)
             context = "\n\n".join([doc.page_content for doc in docs])
+            source_info = [doc.metadata.get('source', 'Unknown') for doc in docs]
             
             # Create prompt
             prompt_template = """
@@ -352,20 +429,22 @@ class RAGQuestionAnswerer:
             formatted_prompt = PROMPT.format(context=context, question=question)
             
             # Stream the answer
+            full_response = ""
             for chunk in self.streaming_llm.stream(formatted_prompt, config={"callbacks": [callback]}):
                 current_response = callback.get_current_response()
+                full_response = current_response # Keep track of the full response
                 yield {
                     "question": question,
                     "answer": current_response,
-                    "sources": [],
+                    "sources": source_info, # Include sources early
                     "finished": False
                 }
             
             # Send one final response indicating completion
             yield {
                 "question": question,
-                "answer": callback.get_current_response(),
-                "sources": [],
+                "answer": full_response, # Send the complete final answer
+                "sources": source_info,
                 "finished": True
             }
             
@@ -384,17 +463,20 @@ class RAGQuestionAnswerer:
             self.initialize()
             
         if not self.vector_store:
-            raise ValueError("Vector store not initialized")
+             logger.error("Vector store not initialized in get_relevant_documents")
+             return []
+             
+        vector_store = self.vector_store # Assign to local variable after check
             
         try:
             # Get relevant documents from the vector store
-            docs = self.vector_store.similarity_search(query, k=k)
+            docs = vector_store.similarity_search(query, k=k)
             
             # Format the results
             results = []
             for i, doc in enumerate(docs):
                 results.append({
-                    "id": i + 1,
+                    "id": doc.metadata.get('source', f'doc_{i+1}'), # Use source from metadata if available
                     "content": doc.page_content,
                     "metadata": doc.metadata
                 })
