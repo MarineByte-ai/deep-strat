@@ -28,6 +28,7 @@ dependencies = [
     "langchain-community",
     "langchain-chroma",
     "langchain-openai",
+    "langchain-voyageai",
 ]
 
 [project.optional-dependencies]

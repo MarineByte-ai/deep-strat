@@ -6,6 +6,7 @@ from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_chroma import Chroma
 from langchain.chains import RetrievalQA
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
+from langchain_voyageai import VoyageAIEmbeddings
 from langchain.prompts import PromptTemplate
 from deep_strat.knowledge_agent import KnowledgeEntry, Session
 from pydantic import SecretStr
@@ -29,12 +30,21 @@ if not OPENAI_API_KEY:
     logger.error("OpenAI API key not found. Please set OPENAI_API_KEY in your .env file.")
     raise ValueError("OpenAI API key not found. Please set OPENAI_API_KEY in your .env file.")
 
-# Convert API key to SecretStr
-SECRET_API_KEY = SecretStr(OPENAI_API_KEY)
+# Get Voyage AI API key
+VOYAGE_API_KEY = os.getenv('VOYAGE_API_KEY')
+if not VOYAGE_API_KEY:
+    logger.error("Voyage AI API key not found. Please set VOYAGE_API_KEY in your .env file.")
+    raise ValueError("Voyage AI API key not found. Please set VOYAGE_API_KEY in your .env file.")
+
+# Convert API keys to SecretStr
+SECRET_OPENAI_API_KEY = SecretStr(OPENAI_API_KEY)
+SECRET_VOYAGE_API_KEY = SecretStr(VOYAGE_API_KEY)
 
 # ChromaDB settings
 CHROMA_PERSIST_DIRECTORY = os.getenv('CHROMA_PERSIST_DIRECTORY', './chroma_db')
 COLLECTION_NAME = "knowledge_base"
+# Default Voyage AI model to use
+VOYAGE_MODEL = os.getenv('VOYAGE_MODEL', 'voyage-3')
 
 
 class StreamingResponseCallback(BaseCallbackHandler):
@@ -55,9 +65,13 @@ class StreamingResponseCallback(BaseCallbackHandler):
 class RAGQuestionAnswerer:
     def __init__(self):
         """Initialize the RAG question answering system"""
-        self.embeddings = OpenAIEmbeddings(
-            model="text-embedding-ada-002",
-            api_key=SECRET_API_KEY
+        if not VOYAGE_API_KEY:
+            raise ValueError("Voyage API key not found. Please set VOYAGE_API_KEY in your .env file.")
+            
+        self.embeddings = VoyageAIEmbeddings(
+            api_key=SecretStr(VOYAGE_API_KEY),
+            model=VOYAGE_MODEL,
+            batch_size=8  # Default batch size
         )
         self.vector_store = None  # type: ignore
         self.qa_chain = None  # type: ignore
@@ -84,6 +98,7 @@ class RAGQuestionAnswerer:
                 collection_name=COLLECTION_NAME,
                 collection_metadata={"hnsw:space": "cosine"}
             )
+            
             logger.info(f"Connected to ChromaDB at {CHROMA_PERSIST_DIRECTORY}")
         except Exception as e:
             logger.error(f"Failed to connect to ChromaDB: {str(e)}")
@@ -92,17 +107,17 @@ class RAGQuestionAnswerer:
         # Initialize the QA chain
         try:
             # Create the language model
-            self.llm = ChatOpenAI(  # type: ignore
+            self.llm = ChatOpenAI(
                 model="gpt-4o-mini",
                 temperature=0,
-                api_key=SECRET_API_KEY
+                api_key=SECRET_OPENAI_API_KEY
             )
             
             # Create a streaming version of the language model
-            self.streaming_llm = ChatOpenAI(  # type: ignore
+            self.streaming_llm = ChatOpenAI(
                 model="gpt-4o-mini",
                 temperature=0,
-                api_key=SECRET_API_KEY,
+                api_key=SECRET_OPENAI_API_KEY,
                 streaming=True
             )
             

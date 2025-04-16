@@ -2,6 +2,8 @@ from flask import Blueprint, jsonify, request, Response, stream_with_context
 from deep_strat.rag_qa import RAGQuestionAnswerer
 import logging
 import json
+import os
+from dotenv import load_dotenv
 
 # Configure logging
 logger = logging.getLogger(__name__)
@@ -16,6 +18,23 @@ rag_qa = RAGQuestionAnswerer()
 def initialize_rag():
     """Initialize the RAG system and load data from the database"""
     try:
+        # Reload environment variables to catch any changes
+        load_dotenv(override=True)
+        
+        # Check for OpenAI API key
+        if not os.getenv('OPENAI_API_KEY'):
+            return jsonify({
+                "status": "error",
+                "message": "OpenAI API key not found. Please set OPENAI_API_KEY in your .env file."
+            }), 500
+            
+        # Check for Voyage AI API key
+        if not os.getenv('VOYAGE_API_KEY'):
+            return jsonify({
+                "status": "error",
+                "message": "Voyage AI API key not found. Please set VOYAGE_API_KEY in your .env file."
+            }), 500
+        
         # Initialize the RAG system
         rag_qa.initialize()
 
@@ -25,7 +44,8 @@ def initialize_rag():
         
         return jsonify({
             "status": "success",
-            "message": "RAG system initialized and data loaded successfully"
+            "message": "RAG system initialized and data loaded successfully",
+            "embedding_model": os.getenv('VOYAGE_MODEL', 'voyage-3')
         })
     except Exception as e:
         logger.error(f"Error initializing RAG system: {str(e)}")
